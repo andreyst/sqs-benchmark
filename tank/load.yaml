@@ -1,0 +1,15 @@
+phantom:
+  enabled: true
+  address: eu-west-1.queue.amazonaws.com # [Target's address]:[target's port]
+  connection_test: false
+  load_profile:
+    load_type: rps # schedule load by defining requests per second
+    schedule: const(50, 2m)
+  ammo_type: uri
+  ammofile: ammo.txt
+overload:
+  enabled: true
+  package: yandextank.plugins.DataUploader
+  token_file: "token.txt"
+telegraf:
+  enabled: false # let's disable telegraf monitoring for this time
