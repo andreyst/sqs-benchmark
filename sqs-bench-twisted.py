@@ -7,7 +7,7 @@ from sys import argv
 from time import sleep
 from twisted.internet import reactor, task
 from twisted.internet import stdio
-from twisted.internet.defer import Deferred, DeferredList
+from twisted.internet.defer import Deferred, DeferredList, CancelledError
 from twisted.internet.protocol import Protocol
 from twisted.internet.ssl import ClientContextFactory
 from twisted.internet.task import react
@@ -20,6 +20,8 @@ import datetime
 import math
 import time
 import uuid
+import pprint
+import sys
 
 # QUEUE_URL = 'https://sqs.eu-west-1.amazonaws.com/903900208897/sqs-benchmark'
 QUEUE_URL = 'https://sqs.eu-west-1.amazonaws.com/245915766340/sqs-benchmark-2'
@@ -53,21 +55,8 @@ class WebClientContextFactory(ClientContextFactory):
     def getContext(self, hostname, port):
         return ClientContextFactory.getContext(self)
 
-class IgnoreBody(Protocol):
-    def __init__(self, deferred):
-        self.deferred = deferred
-
-    def dataReceived(self, bytes):
-        pass
-
-    def connectionLost(self, reason):
-        self.deferred.callback(None)
-
-# pool = HTTPConnectionPool(reactor, persistent=True)
-# pool.maxPersistentPerHost = 5
-
 class Requestor:
-  def __init__(self, queueUrl, maxInflight, stopAt, bodySize, warmupTime):
+  def __init__(self, queueUrl, maxInflight, stopAt, bodySize, warmupTime, timeoutTime):
     self.queueUrl = queueUrl
     self.inflight = 0
     self.maxInflight = maxInflight
@@ -77,6 +66,7 @@ class Requestor:
     self.body = "x" * bodySize
     self.lastRequestMadeAt = None
     self.warmupTime = float(warmupTime)
+    self.timeoutTime = float(timeoutTime)
 
     self.warmedUp = False
     self.requests = {}
@@ -86,40 +76,58 @@ class Requestor:
     self.errorsNum = 0
     self.timedoutNum = 0
 
-    self.startPeriodicTask(self.printStats, 1.0)
-    self.startPeriodicTask(self.cancelLongRequests, 1.0)
+    self.generateUrl()
 
-  def startPeriodicTask(task, period):
-    t = task.LoopingCall(task)
+    self.callPeriodically(self.printStats, 1.0)
+    self.callPeriodically(self.cancelLongRequests, 1.0)
+    self.callPeriodically(self.generateUrl, 3500.0)
+
+  def generateUrl(self):
+    params = {
+      'QueueUrl': self.queueUrl,
+      'MessageBody': self.body
+    }
+    self.url = sqs.generate_presigned_url('send_message', Params=params, ExpiresIn=3600, HttpMethod="GET").encode('latin-1')
+
+  def callPeriodically(self, fun, period):
+    t = task.LoopingCall(fun)
     d = t.start(period)
     d.addErrback(self.cbErr)
 
-  def cancelLongRequests():
-    for req in self.requests:
+  def cancelLongRequests(self):
+    startedAt = datetime.datetime.now()
+    reqIdsToCancel = []
 
-    pass
+    for reqId, req in self.requests.iteritems():
+      delta = datetime.datetime.now() - req['startedAt']
+      if delta.total_seconds() > self.timeoutTime:
+        reqIdsToCancel.append(reqId)
 
-  def requestGet(self, url=None):
+    for reqId in reqIdsToCancel:
+      self.requests[reqId]['d'].cancel()
+
+    self.timedoutNum += len(reqIdsToCancel)
+
+    finishedAt = datetime.datetime.now() - startedAt
+    # print("Cancelling long requests took %s" % finishedAt.total_seconds())
+
+    if len(reqIdsToCancel) > 0:
+      self.ensureInflight()
+
+  def makeRequest(self):
       self.inflight += 1
-      params = {
-        'QueueUrl': self.queueUrl,
-        'MessageBody': self.body
-      }
-      if url is None:
-        url = sqs.generate_presigned_url('send_message', Params=params, ExpiresIn=3600, HttpMethod="GET").encode('latin-1')
-      # url = "http://httpbin.org/ip"
       now = datetime.datetime.now()
-      self.lastRequestMadeAt = now
       reqId = uuid.uuid4()
-      self.requests[reqId] = { 'startedAt': now }
-      d = agent.request('GET', url)
-      d.addCallback(self.cbRequest, reqId)
-      # d.addCallback(cbShutdown)
+      self.lastRequestMadeAt = now
+      d = agent.request('GET', self.url)
+      d.addCallback(self.cbRequestFinished, reqId)
+      d.addErrback(self.cbRequestCancelled, reqId)
       d.addErrback(self.cbRequestErr, reqId)
-      d.addBoth(self.cbComplete, reqId)
-      timeoutCall = reactor.callLater(5, self.dropRequest, d, reqId)
-      self.requests[reqId]['timeoutCall'] = timeoutCall
-      return d
+      d.addBoth(self.cbRequestComplete, reqId)
+      self.requests[reqId] = {
+        'startedAt': now,
+        'd': d
+      }
 
   def printStats(self):
     elapsedTime = datetime.datetime.now() - self.startedAt
@@ -140,11 +148,6 @@ class Requestor:
       print("Request time percentiles - 100%%: %.3f, 0.99%%: %.3f, 0.95%%: %.3f, 0.90%%: %0.3f, 0.5%%: %.3f, 0.01%%: %.3f" % (pcs['1'], pcs['0.99'], pcs['0.95'], pcs['0.90'], pcs['0.5'], pcs['0.01']))
     # print("Last request was made at %s" % (self.lastRequestMadeAt))
 
-  def dropRequest(self, d, reqId):
-    self.timedoutNum += 1
-    d.cancel()
-    self.ensureInflight()
-
   def ensureInflight(self):
     now = datetime.datetime.now()
 
@@ -156,29 +159,30 @@ class Requestor:
       else:
         effectiveMaxInflight = max(1, int(self.maxInflight * (elapsedTime / self.warmupTime)))
 
-    # print("effective max inflight: %s, inflight: %s" % (effectiveMaxInflight, self.inflight))
+    requestsMade = 0
 
     if now < self.stopAt:
       for i in range(effectiveMaxInflight - self.inflight):
-        self.requestGet()
+        self.makeRequest()
+        requestsMade += 1
     elif self.inflight == 0:
       self.stop()
-    # print("effective max inflight: %s, inflight: %s" % (effectiveMaxInflight, self.inflight))
 
-  def cbComplete(self, ignored, reqId):
+  def cbRequestComplete(self, ignored, reqId):
     self.requests[reqId]['finishedAt'] = datetime.datetime.now()
     self.requestsDone.append(dict(self.requests[reqId]))
-    if self.requests[reqId]['timeoutCall'].active():
-      self.requests[reqId]['timeoutCall'].cancel()
+    del self.requests[reqId]
+    self.inflight -= 1
+    self.ensureInflight()
 
-  def cbRequest(self, response, reqId):
+  def cbRequestFinished(self, response, reqId):
       # print 'Response version:', response.version
       # print 'Response code:', response.code
       # print 'Response phrase:', response.phrase
       # print 'Response headers:'
       # print pformat(list(response.headers.getAllRawHeaders()))
       d = readBody(response)
-      d.addCallback(self.cbBody, reqId)
+      d.addCallback(self.cbRequestBodyRead, reqId)
       return d
 
       # print 'Response code:', response.code
@@ -186,16 +190,14 @@ class Requestor:
       # response.deliverBody(IgnoreBody(finished))
       # return finished
 
-  def cbBody(self, body, reqId):
+  def cbRequestBodyRead(self, body, reqId):
       # print('.', end='')
       # print('Response body:' + body)
-      self.inflight -= 1
+      # print("Request end: 1")
       self.requestsNum += 1
       # print(datetime.datetime.now(), self.stopAt)
-      now = datetime.datetime.now()
-      requestElapsedTime = now - self.requests[reqId]['startedAt']
+      requestElapsedTime = datetime.datetime.now() - self.requests[reqId]['startedAt']
       self.requestsTimes.add(requestElapsedTime.total_seconds())
-      self.ensureInflight()
 
   def stop(self):
     # stoppedAt = datetime.datetime.now()
@@ -207,14 +209,24 @@ class Requestor:
     self.printStats()
     # for req in self.requestsDone:
       # print("%s %s" % (req['startedAt'].isoformat(), req['finishedAt'].isoformat()))
-    reactor.stop()
+    if reactor.running:
+      reactor.stop()
+
+  def cbRequestCancelled(self, err, reqId):
+    # Agent wraps CancelledError in another exception,
+    # so if we cancel request, CancelledError is wrapped,
+    # so let's try to match against it and not the original
+    if 'reasons' not in err.value or len(err.value.reasons) == 0:
+      return err
+
+    err.value.reasons[0].trap(CancelledError)
 
   def cbRequestErr(self, err, reqId):
-    self.inflight -= 1
-    if not err.check(twisted.web._newclient.ResponseNeverReceived):
-      self.errorsNum += 1
-      print(err)
-    self.ensureInflight()
+    self.errorsNum += 1
+    print('Request error: %s' % err, file=sys.stderr)
+    # print('Error frames: %s' % err.frames)
+    # print('Error value: %s' % err.value)
+    # print('Error type: %s' % err.type)
 
   def cbErr(self, err):
     print(err)
@@ -224,11 +236,9 @@ parser.add_argument("--duration", "-d", type=int, default=10, help="Run duration
 parser.add_argument("--body-size", "-s", type=int, default=10, help="Message body size, bytes")
 parser.add_argument("--max-inflight", "-i", type=int, default=10, help="Max inflight")
 parser.add_argument("--warmup", "-w", type=int, default=10, help="Warmup period, sec")
-parser.add_argument("--timeout", "-t", type=int, default=5, help="Timeout, sec")
+parser.add_argument("--timeout", "-t", type=float, default=5.0, help="Timeout, sec")
 args = parser.parse_args()
 
-# d = requestGet("http://httpbin.org/ip").addCallback(
-    # lambda ign: requestGet("http://httpbin.org/ip"))
 pool = HTTPConnectionPool(reactor, persistent=True)
 pool.maxPersistentPerHost = 100
 contextFactory = WebClientContextFactory()
@@ -244,7 +254,7 @@ def wait_for_sec_start():
 wait_for_sec_start()
 
 stopAt = (datetime.datetime.now() + datetime.timedelta(seconds=args.duration)).replace(microsecond=0)
-r = Requestor(QUEUE_URL, args.max_inflight, stopAt, args.body_size, args.warmup)
+r = Requestor(QUEUE_URL, args.max_inflight, stopAt, args.body_size, args.warmup, args.timeout)
 r.ensureInflight()
 
 # reactor.suggestThreadPoolSize(30)
