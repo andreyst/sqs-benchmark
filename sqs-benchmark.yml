@@ -1,0 +1,39 @@
+# Add this snippet to the top of your playbook.
+# It will install python2 if missing (but checks first so no expensive repeated apt updates)
+# gwillem@gmail.com
+
+- hosts: all
+  gather_facts: False
+
+  tasks:
+  - name: install python 2
+    raw: test -e /usr/bin/python || (sudo apt -y update && sudo apt install -y python-minimal)
+
+  - name: install atop
+    raw: test -e /usr/bin/atop || (sudo apt -y update && sudo apt install -y atop)
+
+  - name: install pip
+    raw: test -e /usr/bin/pip || (sudo apt -y update && sudo apt install -y python-pip)
+
+  - pip:
+      name: requests
+
+  - pip:
+      name: boto3
+
+  - copy:
+      src: "{{ playbook_dir }}/sqs-bench.py"
+      dest: /home/ubuntu/sqs-bench.py
+      owner: ubuntu
+      group: ubuntu
+    tags:
+      - code
+
+  - name: Ensures /home/ubuntu/.aws dir exists
+    file: path=/home/ubuntu/.aws state=directory
+
+  - copy:
+      src: "{{ playbook_dir }}/aws_config"
+      dest: /home/ubuntu/.aws/config
+      owner: ubuntu
+      group: ubuntu
