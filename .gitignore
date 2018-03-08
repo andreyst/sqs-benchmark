@@ -1,0 +1,6 @@
+aws_config
+tank/.retry
+tank/logs/
+tank/tank.log
+tank/token.txt
+hosts
