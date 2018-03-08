@@ -1,4 +1,5 @@
 aws_config
+*.retry
 tank/.retry
 tank/logs/
 tank/tank.log
