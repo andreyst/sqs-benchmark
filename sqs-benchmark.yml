@@ -16,16 +16,26 @@
     raw: test -e /usr/bin/pip || (sudo apt -y update && sudo apt install -y python-pip)
 
   - pip:
-      name: requests
-
-  - pip:
-      name: boto3
+      name: pipenv
 
   - copy:
-      src: "{{ playbook_dir }}/sqs-bench.py"
-      dest: /home/ubuntu/sqs-bench.py
+      src: "{{ playbook_dir }}/sqs-bench-twisted.py"
+      dest: /home/ubuntu/sqs-bench-twisted.py
       owner: ubuntu
       group: ubuntu
+    tags:
+      - code
+
+  - copy:
+      src: "{{ playbook_dir }}/Pipfile"
+      dest: /home/ubuntu/Pipfile
+      owner: ubuntu
+      group: ubuntu
+    tags:
+      - code
+
+  - name: pipenv install
+    raw: /home/ubuntu/.local/bin/pipenv install
     tags:
       - code
 
@@ -37,3 +47,4 @@
       dest: /home/ubuntu/.aws/config
       owner: ubuntu
       group: ubuntu
+
