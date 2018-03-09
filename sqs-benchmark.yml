@@ -6,27 +6,38 @@
   gather_facts: False
 
   tasks:
-  - name: install python 2
+  - name: install python
     raw: test -e /usr/bin/python || (sudo apt -y update && sudo apt install -y python-minimal)
 
   - name: install atop
-    raw: test -e /usr/bin/atop || (sudo apt -y update && sudo apt install -y atop)
+    apt:
+      name: atop
+    become: true
 
   - name: install pip
-    raw: test -e /usr/bin/pip || (sudo apt -y update && sudo apt install -y python-pip)
+    easy_install:
+      name: pip
+      state: latest
+    become: true
 
-  - pip:
+  - name: install pipenv
+    pip:
       name: pipenv
+    become: true
 
-  - copy:
-      src: "{{ playbook_dir }}/sqs-bench-twisted.py"
-      dest: /home/ubuntu/sqs-bench-twisted.py
+  - name: copy benchmark scripts
+    copy:
+      src: "{{ item }}"
+      dest: /home/ubuntu/
       owner: ubuntu
       group: ubuntu
+    with_fileglob:
+      - "{{ playbook_dir }}/sqs-bench-*.py"
     tags:
       - code
 
-  - copy:
+  - name: copy pipfile
+    copy:
       src: "{{ playbook_dir }}/Pipfile"
       dest: /home/ubuntu/Pipfile
       owner: ubuntu
@@ -45,10 +56,11 @@
     tags:
       - code
 
-  - name: Ensures /home/ubuntu/.aws dir exists
+  - name: ensure /home/ubuntu/.aws dir exists
     file: path=/home/ubuntu/.aws state=directory
 
-  - copy:
+  - name: copy aws_config
+    copy:
       src: "{{ playbook_dir }}/aws_config"
       dest: /home/ubuntu/.aws/config
       owner: ubuntu
