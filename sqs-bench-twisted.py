@@ -213,9 +213,16 @@ class Requestor:
       reactor.stop()
 
   def cbRequestCancelled(self, err, reqId):
-    # Agent wraps CancelledError in another exception,
-    # so if we cancel request, CancelledError is wrapped,
-    # so let's try to match against it and not the original
+    # When we cancel a request, its errback is called with CancelledError.
+    # We want to process these errors separately from all other errors
+    # to count them as timed out and not errors.
+    # But Twisted's agent wraps CancelledError in another exception,
+    # putting CancelledError inside of err's reasons arrary,
+    # so to trap it we need to go deeper.
+
+    # Note that there will be cases of errors which are not wrapped
+    # at all and thus have different structure -- we just continue with
+    # other errback in these cases
     if 'reasons' not in err.value or len(err.value.reasons) == 0:
       return err
 
