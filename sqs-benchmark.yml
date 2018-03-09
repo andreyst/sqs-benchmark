@@ -35,7 +35,13 @@
       - code
 
   - name: pipenv install
-    raw: /home/ubuntu/.local/bin/pipenv install
+    command: pipenv install
+    environment:
+      PATH: /home/ubuntu/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      LC_ALL: C.UTF-8
+      PIPENV_NOSPIN: 1
+      PIPENV_YES: 1
+      PIPENV_COLORBLIND: 1
     tags:
       - code
 
